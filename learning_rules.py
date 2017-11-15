@@ -173,11 +173,11 @@ class RMSPropLearningRule(GradientDescentLearningRule):
 
     .. math::
 
-        \\mu' &= \\lambda\\mu + (1-\\lambda)(\\nabla J)^2
+        \\rootmeansquare' &= \\lambda\\rootmeansquare + (1-\\lambda)(\\nabla J)^2
 
     .. math::
 
-        \\theta' &= \\theta - \\frac{\\alpha}{\\sqrt{\\mu + \\epsilon} + \\epsilon}\\nabla J
+        \\param' &= \\param - \\frac{\\alpha}{\\sqrt{\\rootmeansquare + \\epsilon} + \\epsilon}\\nabla J
 
     where we use :math:`\\epsilon` as a (small) smoothing factor to prevent from dividing by zero.
     """
@@ -264,6 +264,118 @@ class RMSPropLearningRule(GradientDescentLearningRule):
         """
         self.rms = self.decay_rate * self.rms + np.square(grads_wrt_params) * (1.0 - self.decay_rate)
         for param, rm, grad in zip(self.params, rms, grads_wrt_params):
-            mom *= self.mom_coeff
-            mom -= self.learning_rate * grad
-            param += mom
+            param =  param - (grad*self.learning_rate)/np.sqrt(rm+self.epslion)
+            
+class AdaMLearningRule(GradientDescentLearningRule):
+       """
+    Adam optimizer.
+
+    The Adam optimizer combines features from RMSprop and Adagrad. We
+    accumulate both the first and second moments of the gradient with decay
+    rates :math:`\\beta_1` and :math:`\\beta_2` corresponding to window sizes of
+    :math:`1/\\beta_1` and :math:`1/\\beta_2`, respectively.
+
+    .. math::
+        m' &= \\beta_1 m + (1-\\beta_1) \\nabla J
+
+    .. math::
+        v' &= \\beta_2 v + (1-\\beta_2) (\\nabla J)^2
+
+    We update the parameters by the ratio of the two moments:
+
+    .. math::
+        \\theta = \\theta - \\alpha \\frac{\\hat{m}'}{\\sqrt{\\hat{v}'}+\\epsilon}
+
+    where we compute the bias-corrected moments :math:`\\hat{m}'` and :math:`\\hat{v}'` via
+
+    .. math::
+        \\hat{m}' &= m'/(1-\\beta_1^t)
+
+    .. math::
+        \\hat{v}' &= v'/(1-\\beta_1^t)
+        """
+def __init__(self, stochastic_round=False, learning_rate=0.001, beta_1=0.9, beta_2=0.999,
+                 epsilon=1e-8, gradient_clip_norm=None, gradient_clip_value=None,
+                 param_clip_value=None, name="adam"):
+        """
+        Class constructor.
+
+        Args:
+            stochastic_round (bool): Set this to True for stochastic rounding.
+                                     If False rounding will be to nearest.
+                                     If True will perform stochastic rounding using default width.
+                                     Only affects the gpu backend.
+            learning_rate (float): the multiplicative coefficient of updates
+            beta_1 (float): Adam parameter beta1
+            beta_2 (float): Adam parameter beta2
+            epsilon (float): numerical stability parameter
+            gradient_clip_norm (float, optional): Target gradient norm.
+                                                  Defaults to None.
+            gradient_clip_value (float, optional): Value to element-wise clip gradients.
+                                                   Defaults to None.
+            param_clip_value (float, optional): Value to element-wise clip parameters.
+                                                Defaults to None.
+        """
+        super(Adam, self).__init__(name=name)
+        self.beta_1 = beta_1
+        self.beta_2 = beta_2
+        self.epsilon = epsilon
+        self.learning_rate = learning_rate
+        self.stochastic_round = stochastic_round
+        self.gradient_clip_norm = gradient_clip_norm
+        self.gradient_clip_value = gradient_clip_value
+        self.param_clip_value = param_clip_value
+        self.t = 0 
+        
+    def initialise(self, params):
+        """Initialises the state of the learning rule for a set or parameters.
+
+        This must be called before `update_params` is first called.
+
+        Args:
+            params: A list of the parameters to be optimised. Note these will
+                be updated *in-place* to avoid reallocating arrays on each
+                update.
+        """
+         """
+        Apply the learning rule to all the layers and update the states.
+
+        Arguments:
+            layer_list (list): a list of Layer objects to optimize.
+            epoch (int): the current epoch, needed for the Schedule object.
+        """
+
+        super(AdaMLearningRule, self).initialise(params)
+        self.adam = []
+        for param in self.params:
+            self.adam.extend([np.zeros_like(param) for i in range(2)])
+
+    def reset(self):
+        """Resets any additional state variables to their intial values.
+
+        For this learning rule this corresponds to zeroing all the momenta.
+        """
+        for ad in zip(self.adam):
+            adam *= 0.
+
+    def update_params(self, grads_wrt_params):
+        """Applies a single update to all parameters.
+
+        All parameter updates are performed using in-place operations and so
+        nothing is returned.
+
+        Args:
+            grads_wrt_params: A list of gradients of the scalar loss function
+                with respect to each of the parameters passed to `initialise`
+                previously, with this list expected to be in the same order.
+        """
+        self.t = self.t + 1
+        l = (self.learning_rate *np.sqrt(1 - self.beta_2 ** self.t) /
+             (1 - self.beta_1 ** self.t))
+        for param, ad, grad in zip(self.params, adam, grads_wrt_params):
+            m, v = ad
+            m[:] = m * self.beta_1 + (1. - self.beta_1) * grad
+            v[:] = v * self.beta_2 + (1. - self.beta_2) * grad * grad
+            
+            param = param - (scale_factor * l * m)
+                        / (np.sqrt(v) + self.epsilon)
