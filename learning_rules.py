@@ -209,7 +209,7 @@ class RMSPropLearningRule(GradientDescentLearningRule):
         Notes:
             Only constant learning rate is supported currently.
         """
-        super(RMSPropLearningRule, self).__init__(name=name)
+        super(RMSPropLearningRule, self).__init__(learning_rate)
         self.state_list = None
         self.epsilon = epsilon
         self.decay_rate = decay_rate
@@ -316,7 +316,7 @@ def __init__(self, stochastic_round=False, learning_rate=0.001, beta_1=0.9, beta
             param_clip_value (float, optional): Value to element-wise clip parameters.
                                                 Defaults to None.
         """
-        super(Adam, self).__init__(name=name)
+        super(Adam, self).__init__(learning_rate)
         self.beta_1 = beta_1
         self.beta_2 = beta_2
         self.epsilon = epsilon
