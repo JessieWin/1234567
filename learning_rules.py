@@ -160,222 +160,82 @@ class MomentumLearningRule(GradientDescentLearningRule):
             mom *= self.mom_coeff
             mom -= self.learning_rate * grad
             param += mom
-            
+
 class RMSPropLearningRule(GradientDescentLearningRule):
-       """
-    Root Mean Square propagation.
-
-    Root Mean Square (RMS) propagation protects against vanishing and
-    exploding gradients. In RMSprop, the gradient is divided by a running
-    average of recent gradients. Given the parameters :math:`\\theta`, gradient :math:`\\nabla J`,
-    we keep a running average :math:`\\mu` of the last :math:`1/\\lambda` gradients squared.
-    The update equations are then given by
-
-    .. math::
-
-        \\rootmeansquare' &= \\lambda\\rootmeansquare + (1-\\lambda)(\\nabla J)^2
-
-    .. math::
-
-        \\param' &= \\param - \\frac{\\alpha}{\\sqrt{\\rootmeansquare + \\epsilon} + \\epsilon}\\nabla J
-
-    where we use :math:`\\epsilon` as a (small) smoothing factor to prevent from dividing by zero.
-    """
-
-    def __init__(self, stochastic_round=False, decay_rate=0.95, learning_rate=2e-3, epsilon=1e-6,
-                 gradient_clip_norm=None, gradient_clip_value=None, param_clip_value=None,
-                 name=None, schedule=Schedule()):
-        """
-        Class constructor.
-
-        Arguments:
-            stochastic_round (bool): Set this to True for stochastic rounding.
-                                     If False rounding will be to nearest.
-                                     If True will perform stochastic rounding using default width.
-                                     Only affects the gpu backend.
-            decay_rate (float): decay rate of states
-            learning_rate (float): the multiplication coefficent of updates
-            epsilon (float): smoothing epsilon to avoid divide by zeros
-            gradient_clip_norm (float, optional): Target gradient norm.
-                                                  Defaults to None.
-            gradient_clip_value (float, optional): Value to element-wise clip
-                                                   gradients.
-                                                   Defaults to None.
-            param_clip_value (float, optional): Value to element-wise clip
-                                                parameters.
-                                                Defaults to None.
-            schedule (neon.optimizers.optimizer.Schedule, optional): Learning rate schedule.
-                                                                     Defaults to a constant.
-        Notes:
-            Only constant learning rate is supported currently.
-        """
+    def  __init__ (self, learning_rate, decay_rate=0.1):
+        """Creates a new learning rule object."""
         super(RMSPropLearningRule, self).__init__(learning_rate)
-        self.state_list = None
-        self.epsilon = epsilon
+        assert decay_rate >= 0. and decay_rate <= 1., ('Decay rate should be in the range [0, 1].')
         self.decay_rate = decay_rate
-        self.learning_rate = learning_rate
-        self.schedule = schedule
-        self.gradient_clip_norm = gradient_clip_norm
-        self.gradient_clip_value = gradient_clip_value
-        self.param_clip_value = param_clip_value
-        self.stochastic_round = stochastic_round
-        
+        self.epsilon = 0.00001
+
     def initialise(self, params):
         """Initialises the state of the learning rule for a set or parameters.
 
-        This must be called before `update_params` is first called.
-
-        Args:
-            params: A list of the parameters to be optimised. Note these will
-                be updated *in-place* to avoid reallocating arrays on each
-                update.
+        For RMSProp, just set the accumulated mean square of gradients to be 0
         """
-         """
-        Apply the learning rule to all the layers and update the states.
-
-        Arguments:
-            layer_list (list): a list of Layer objects to optimize.
-            epoch (int): the current epoch, needed for the Schedule object.
-        """
-
         super(RMSPropLearningRule, self).initialise(params)
-        self.rms = []
+        meansquare = []
         for param in self.params:
-            self.rms.append(np.zeros_like(param))
+            meansquare.append(np.zeros_like(param))
+        self.meansquare = np.array(meansquare)
 
     def reset(self):
-        """Resets any additional state variables to their intial values.
-
-        For this learning rule this corresponds to zeroing all the momenta.
-        """
-        for rm in zip(self.rms):
-            rm *= 0.
+        """Resets any additional state variables to their intial values."""
+        for ms in zip(self.meansquare):
+            ms *= 0.
 
     def update_params(self, grads_wrt_params):
-        """Applies a single update to all parameters.
+        """Applies a single update to all parameters."""
+        grads = np.array(grads_wrt_params)
+        self.meansquare = self.decay_rate * (grads**2) + (1 - self.decay_rate) * self.meansquare
+        for ms, param, grad in zip(self.meansquare, self.params, grads):
+            #ms = self.decay_rate * grad**2 + (1 - self.decay_rate) * ms
+            delta = - grad * self.learning_rate / (np.sqrt(ms)+self.epsilon)
+            param += delta
 
-        All parameter updates are performed using in-place operations and so
-        nothing is returned.
-
-        Args:
-            grads_wrt_params: A list of gradients of the scalar loss function
-                with respect to each of the parameters passed to `initialise`
-                previously, with this list expected to be in the same order.
-        """
-        self.rms = self.decay_rate * self.rms + np.square(grads_wrt_params) * (1.0 - self.decay_rate)
-        for param, rm, grad in zip(self.params, rms, grads_wrt_params):
-            param =  param - (grad*self.learning_rate)/np.sqrt(rm+self.epslion)
-            
 class AdaMLearningRule(GradientDescentLearningRule):
-       """
-    Adam optimizer.
-
-    The Adam optimizer combines features from RMSprop and Adagrad. We
-    accumulate both the first and second moments of the gradient with decay
-    rates :math:`\\beta_1` and :math:`\\beta_2` corresponding to window sizes of
-    :math:`1/\\beta_1` and :math:`1/\\beta_2`, respectively.
-
-    .. math::
-        m' &= \\beta_1 m + (1-\\beta_1) \\nabla J
-
-    .. math::
-        v' &= \\beta_2 v + (1-\\beta_2) (\\nabla J)^2
-
-    We update the parameters by the ratio of the two moments:
-
-    .. math::
-        \\theta = \\theta - \\alpha \\frac{\\hat{m}'}{\\sqrt{\\hat{v}'}+\\epsilon}
-
-    where we compute the bias-corrected moments :math:`\\hat{m}'` and :math:`\\hat{v}'` via
-
-    .. math::
-        \\hat{m}' &= m'/(1-\\beta_1^t)
-
-    .. math::
-        \\hat{v}' &= v'/(1-\\beta_1^t)
+    
+    def  __init__ (self, learning_rate, beta1=0.9, beta2=0.99):
+        """Creates a new learning rule object.
         """
-def __init__(self, stochastic_round=False, learning_rate=0.001, beta_1=0.9, beta_2=0.999,
-                 epsilon=1e-8, gradient_clip_norm=None, gradient_clip_value=None,
-                 param_clip_value=None, name="adam"):
-        """
-        Class constructor.
-
-        Args:
-            stochastic_round (bool): Set this to True for stochastic rounding.
-                                     If False rounding will be to nearest.
-                                     If True will perform stochastic rounding using default width.
-                                     Only affects the gpu backend.
-            learning_rate (float): the multiplicative coefficient of updates
-            beta_1 (float): Adam parameter beta1
-            beta_2 (float): Adam parameter beta2
-            epsilon (float): numerical stability parameter
-            gradient_clip_norm (float, optional): Target gradient norm.
-                                                  Defaults to None.
-            gradient_clip_value (float, optional): Value to element-wise clip gradients.
-                                                   Defaults to None.
-            param_clip_value (float, optional): Value to element-wise clip parameters.
-                                                Defaults to None.
-        """
-        super(Adam, self).__init__(learning_rate)
-        self.beta_1 = beta_1
-        self.beta_2 = beta_2
-        self.epsilon = epsilon
-        self.learning_rate = learning_rate
-        self.stochastic_round = stochastic_round
-        self.gradient_clip_norm = gradient_clip_norm
-        self.gradient_clip_value = gradient_clip_value
-        self.param_clip_value = param_clip_value
-        self.t = 0 
+        super(AdaMLearningRule, self).__init__(learning_rate)
         
+        assert beta1 >= 0. and beta1 <= 1., ('1st moment decay rate should be in the range [0, 1].')
+        self.beta1 = beta1
+        assert beta2 >= 0. and beta2 <= 1., ('2nd moment decay rate should be in the range [0, 1].')
+        self.beta2 = beta2
+        self.epsilon = 1e-8
+        self.timestamp = 0
+
     def initialise(self, params):
         """Initialises the state of the learning rule for a set or parameters.
-
-        This must be called before `update_params` is first called.
-
-        Args:
-            params: A list of the parameters to be optimised. Note these will
-                be updated *in-place* to avoid reallocating arrays on each
-                update.
         """
-         """
-        Apply the learning rule to all the layers and update the states.
-
-        Arguments:
-            layer_list (list): a list of Layer objects to optimize.
-            epoch (int): the current epoch, needed for the Schedule object.
-        """
-
         super(AdaMLearningRule, self).initialise(params)
-        self.adam = []
+        firstmoment = []
+        secondmoment = []
         for param in self.params:
-            self.adam.extend([np.zeros_like(param) for i in range(2)])
+            firstmoment.append(np.zeros_like(param))
+            secondmoment.append(np.zeros_like(param))
+        self.firstmoment = np.array(firstmoment)
+        self.secondmoment = np.array(secondmoment)
 
     def reset(self):
         """Resets any additional state variables to their intial values.
-
-        For this learning rule this corresponds to zeroing all the momenta.
         """
-        for ad in zip(self.adam):
-            adam *= 0.
+        self.timestamp = 0
+        for fmom, smom in zip(self.firstmoment, self.secondmoment):
+            fmom *= 0.
+            smom *= 0.
 
     def update_params(self, grads_wrt_params):
         """Applies a single update to all parameters.
-
-        All parameter updates are performed using in-place operations and so
-        nothing is returned.
-
-        Args:
-            grads_wrt_params: A list of gradients of the scalar loss function
-                with respect to each of the parameters passed to `initialise`
-                previously, with this list expected to be in the same order.
         """
-        self.t = self.t + 1
-        l = (self.learning_rate *np.sqrt(1 - self.beta_2 ** self.t) /
-             (1 - self.beta_1 ** self.t))
-        for param, ad, grad in zip(self.params, adam, grads_wrt_params):
-            m, v = ad
-            m[:] = m * self.beta_1 + (1. - self.beta_1) * grad
-            v[:] = v * self.beta_2 + (1. - self.beta_2) * grad * grad
-            
-            param = param - (scale_factor * l * m)
-                        / (np.sqrt(v) + self.epsilon)
+        grads_wrt_params = np.array(grads_wrt_params)
+        self.timestamp += 1
+        self.firstmoment = self.firstmoment * self.beta1 + (1. - self.beta1) * grads_wrt_params
+        self.secondmoment = self.secondmoment * self.beta2 + (1. - self.beta2) * (grads_wrt_params**2)
+        for fm, sm, param in zip(self.firstmoment, self.secondmoment, self.params):
+            firsthat = fm/(1-self.beta1**self.timestamp)
+            secondhat = sm/(1-self.beta2**self.timestamp)
+            param -=  self.learning_rate * firsthat/(np.sqrt(secondhat)+self.epsilon)

@@ -364,7 +364,7 @@ class BatchNormalizationLayer(StochasticLayerWithParameters):
         mu = 1./N * np.sum(inputs, axis = 0)
 
         #step2: subtract mean vector of every trainings example
-        xmu = x - mu
+        xmu = inputs - mu
 
         #step3: following the lower branch - calculation denominator
         sq = xmu ** 2
@@ -373,7 +373,7 @@ class BatchNormalizationLayer(StochasticLayerWithParameters):
         var = 1./N * np.sum(sq, axis = 0)
 
         #step5: add eps for numerical stability, then sqrt
-        sqrtvar = np.sqrt(var + eps)
+        sqrtvar = np.sqrt(var + self.epsilon)
 
         #step6: invert sqrtwar
         ivar = 1./sqrtvar
@@ -381,16 +381,17 @@ class BatchNormalizationLayer(StochasticLayerWithParameters):
         #step7: execute normalization
         xhat = xmu * ivar
 
-         #step8: Nor the two transformation steps
-        gammax = gamma * xhat
+        #step8: Nor the two transformation steps
+        gammax = self.gamma * xhat
 
         #step9
-        out = gammax + beta
+        outputs = gammax + self.beta
 
         #store intermediate
-        cache = (xhat,gamma,xmu,ivar,sqrtvar,var,eps)
+        self.cache = (xhat,xmu,ivar,sqrtvar,var)
 
-        return out, cache
+        return outputs
+    
     def bprop(self, inputs, outputs, grads_wrt_outputs):
         """Back propagates gradients through a layer.
 
@@ -409,20 +410,19 @@ class BatchNormalizationLayer(StochasticLayerWithParameters):
             (batch_size, input_dim).
         """
 
-         
         #unfold the variables stored in cache
-        xhat,gamma,xmu,ivar,sqrtvar,var,eps = cache
+        (xhat,xmu,ivar,sqrtvar,var) = self.cache
 
         #get the dimensions of the input/output
-        N,D = dout.shape
+        N,D = grads_wrt_outputs.shape
 
         #step9
-        dbeta = np.sum(dout, axis=0)
-        dgammax = dout #not necessary, but more understandable
+        dbeta = np.sum(grads_wrt_outputs, axis=0)
+        dgammax = grads_wrt_outputs #not necessary, but more understandable
 
         #step8
         dgamma = np.sum(dgammax*xhat, axis=0)
-        dxhat = dgammax * gamma
+        dxhat = dgammax * self.gamma
 
         #step7
         divar = np.sum(dxhat*xmu, axis=0)
@@ -432,7 +432,7 @@ class BatchNormalizationLayer(StochasticLayerWithParameters):
         dsqrtvar = -1. /(sqrtvar**2) * divar
 
         #step5
-        dvar = 0.5 * 1. /np.sqrt(var+eps) * dsqrtvar
+        dvar = 0.5 * 1. /np.sqrt(var+self.epsilon) * dsqrtvar
 
         #step4
         dsq = 1. /N * np.ones((N,D)) * dvar
@@ -450,7 +450,8 @@ class BatchNormalizationLayer(StochasticLayerWithParameters):
         #step0
         dx = dx1 + dx2
 
-        return dx, dgamma, dbeta
+        return dx
+        
 
 
     def grads_wrt_params(self, inputs, grads_wrt_outputs):
@@ -465,7 +466,18 @@ class BatchNormalizationLayer(StochasticLayerWithParameters):
             list of arrays of gradients with respect to the layer parameters
             `[grads_wrt_weights, grads_wrt_biases]`.
         """
-        raise NotImplementedError
+        #unfold the variables stored in cache
+        (xhat,xmu,ivar,sqrtvar,var) = self.cache
+
+
+        #step9
+        dbeta = np.sum(grads_wrt_outputs, axis=0)
+        dgammax = grads_wrt_outputs #not necessary, but more understandable
+
+        #step8
+        dgamma = np.sum(dgammax*xhat, axis=0)
+
+        return dgamma, dbeta
 
     def params_penalty(self):
         """Returns the parameter dependent penalty term for this layer.
